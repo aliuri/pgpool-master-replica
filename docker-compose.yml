@@ -1,0 +1,155 @@
+version: '3.8'
+
+services:
+  postgres-master:
+    image: docker.io/library/postgres:15
+    container_name: postgres-master
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: mysecretpassword
+      POSTGRES_DB: mydb
+    volumes:
+      - master-data:/var/lib/postgresql/data
+    networks:
+      - pg-cluster
+    ports:
+      - "5434:5432"
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=replica"
+      - "-c"
+      - "max_wal_senders=10"
+      - "-c"
+      - "max_replication_slots=10"
+      - "-c"
+      - "hot_standby=on"
+      - "-c"
+      - "listen_addresses=*"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  postgres-init:
+    image: docker.io/library/postgres:15
+    container_name: postgres-init
+    depends_on:
+      postgres-master:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: mysecretpassword
+    networks:
+      - pg-cluster
+    volumes:
+      - master-data:/var/lib/postgresql/data
+    user: root
+    command: |
+      bash -c "
+        # Create replicator user
+        psql -h postgres-master -U postgres -c \"CREATE USER replicator WITH REPLICATION ENCRYPTED PASSWORD 'replicatorpass';\" || true
+
+        # Add pg_hba entries for replication
+        echo 'host replication replicator 0.0.0.0/0 md5' >> /var/lib/postgresql/data/pg_hba.conf
+        echo 'host all all 0.0.0.0/0 md5' >> /var/lib/postgresql/data/pg_hba.conf
+
+        # Reload config
+        psql -h postgres-master -U postgres -c 'SELECT pg_reload_conf();'
+
+        echo 'Init complete'
+      "
+    restart: "no"
+
+  postgres-replica:
+    image: docker.io/library/postgres:15
+    container_name: postgres-replica
+    depends_on:
+      postgres-init:
+        condition: service_completed_successfully
+    environment:
+      PGPASSWORD: replicatorpass
+      PGDATA: /var/lib/postgresql/data
+    volumes:
+      - replica-data:/var/lib/postgresql/data
+    networks:
+      - pg-cluster
+    ports:
+      - "5435:5432"
+    user: postgres
+    entrypoint: []
+    command: |
+      bash -c "
+        rm -rf /var/lib/postgresql/data/*
+        pg_basebackup -h postgres-master -D /var/lib/postgresql/data -U replicator -P -v -R -X stream
+        chmod 700 /var/lib/postgresql/data
+        exec postgres
+      "
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  pgpool:
+    image: docker.io/pgpool/pgpool:latest
+    container_name: pgpool
+    ports:
+      - "6432:9999"
+    environment:
+      # Backend node 0 (master)
+      PGPOOL_PARAMS_BACKEND_HOSTNAME0: postgres-master
+      PGPOOL_PARAMS_BACKEND_PORT0: 5432
+      PGPOOL_PARAMS_BACKEND_WEIGHT0: 1
+      PGPOOL_PARAMS_BACKEND_FLAG0: ALWAYS_PRIMARY
+
+      # Backend node 1 (replica)
+      PGPOOL_PARAMS_BACKEND_HOSTNAME1: postgres-replica
+      PGPOOL_PARAMS_BACKEND_PORT1: 5432
+      PGPOOL_PARAMS_BACKEND_WEIGHT1: 1
+
+      # Authentication
+      PGPOOL_PARAMS_SR_CHECK_USER: replicator
+      PGPOOL_PARAMS_SR_CHECK_PASSWORD: replicatorpass
+      PGPOOL_POSTGRES_USERNAME: postgres
+      PGPOOL_POSTGRES_PASSWORD: mysecretpassword
+
+      # Clustering mode
+      PGPOOL_PARAMS_BACKEND_CLUSTERING_MODE: streaming_replication
+      PGPOOL_PARAMS_LOAD_BALANCE_MODE: "on"
+
+      # Health check
+      PGPOOL_PARAMS_HEALTH_CHECK_PERIOD: 10
+      PGPOOL_PARAMS_HEALTH_CHECK_TIMEOUT: 20
+      PGPOOL_PARAMS_HEALTH_CHECK_USER: postgres
+      PGPOOL_PARAMS_HEALTH_CHECK_PASSWORD: mysecretpassword
+      PGPOOL_PARAMS_HEALTH_CHECK_MAX_RETRIES: 10
+      PGPOOL_PARAMS_HEALTH_CHECK_RETRY_DELAY: 5
+
+      # Connection pooling
+      PGPOOL_PARAMS_NUM_INIT_CHILDREN: 32
+      PGPOOL_PARAMS_MAX_POOL: 4
+
+      # Failover
+      PGPOOL_PARAMS_FAILOVER_ON_BACKEND_ERROR: "off"
+
+      # Authentication method
+      PGPOOL_PARAMS_ALLOW_CLEAR_TEXT_FRONTEND_AUTH: "on"
+
+      # Logging
+      PGPOOL_PARAMS_LOG_DESTINATION: stderr
+      PGPOOL_PARAMS_LOG_MIN_MESSAGES: info
+
+    networks:
+      - pg-cluster
+    depends_on:
+      postgres-replica:
+        condition: service_healthy
+
+volumes:
+  master-data:
+  replica-data:
+
+networks:
+  pg-cluster:
+    driver: bridge
