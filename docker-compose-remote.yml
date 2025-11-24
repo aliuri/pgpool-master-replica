@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  pgpool:
+    image: docker.io/pgpool/pgpool:latest
+    container_name: pgpool-remote
+    ports:
+      - "6432:9999"
+    environment:
+      # Backend node 0 (master) - GANTI DENGAN IP/HOSTNAME REMOTE
+      PGPOOL_PARAMS_BACKEND_HOSTNAME0: 192.168.1.100
+      PGPOOL_PARAMS_BACKEND_PORT0: 5432
+      PGPOOL_PARAMS_BACKEND_WEIGHT0: 1
+      PGPOOL_PARAMS_BACKEND_FLAG0: ALWAYS_PRIMARY
+
+      # Backend node 1 (replica 1) - GANTI DENGAN IP/HOSTNAME REMOTE
+      PGPOOL_PARAMS_BACKEND_HOSTNAME1: 192.168.1.101
+      PGPOOL_PARAMS_BACKEND_PORT1: 5432
+      PGPOOL_PARAMS_BACKEND_WEIGHT1: 1
+
+      # Backend node 2 (replica 2) - GANTI DENGAN IP/HOSTNAME REMOTE
+      PGPOOL_PARAMS_BACKEND_HOSTNAME2: 192.168.1.102
+      PGPOOL_PARAMS_BACKEND_PORT2: 5432
+      PGPOOL_PARAMS_BACKEND_WEIGHT2: 1
+
+      # Authentication - SESUAIKAN DENGAN CREDENTIAL REMOTE
+      PGPOOL_PARAMS_SR_CHECK_USER: replicator
+      PGPOOL_PARAMS_SR_CHECK_PASSWORD: replicatorpass
+      PGPOOL_POSTGRES_USERNAME: postgres
+      PGPOOL_POSTGRES_PASSWORD: mysecretpassword
+
+      # Clustering mode
+      PGPOOL_PARAMS_BACKEND_CLUSTERING_MODE: streaming_replication
+      PGPOOL_PARAMS_LOAD_BALANCE_MODE: "on"
+
+      # Health check
+      PGPOOL_PARAMS_HEALTH_CHECK_PERIOD: 10
+      PGPOOL_PARAMS_HEALTH_CHECK_TIMEOUT: 20
+      PGPOOL_PARAMS_HEALTH_CHECK_USER: postgres
+      PGPOOL_PARAMS_HEALTH_CHECK_PASSWORD: mysecretpassword
+      PGPOOL_PARAMS_HEALTH_CHECK_MAX_RETRIES: 10
+      PGPOOL_PARAMS_HEALTH_CHECK_RETRY_DELAY: 5
+
+      # Connection pooling
+      PGPOOL_PARAMS_NUM_INIT_CHILDREN: 32
+      PGPOOL_PARAMS_MAX_POOL: 4
+
+      # Failover
+      PGPOOL_PARAMS_FAILOVER_ON_BACKEND_ERROR: "off"
+
+      # Authentication method
+      PGPOOL_PARAMS_ALLOW_CLEAR_TEXT_FRONTEND_AUTH: "on"
+
+      # Logging
+      PGPOOL_PARAMS_LOG_DESTINATION: stderr
+      PGPOOL_PARAMS_LOG_MIN_MESSAGES: info
+
+    restart: unless-stopped
